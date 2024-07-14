@@ -64,6 +64,9 @@ __run_pre_execute_checks() {
 # Custom functions
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Script to execute
+START_SCRIPT="/usr/local/etc/docker/exec/$SERVICE_NAME"
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # Reset environment before executing service
 RESET_ENV="yes"
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -417,8 +420,10 @@ __run_start_script() {
   local sysname="${SERVER_NAME:-${FULL_DOMAIN_NAME:-$HOSTNAME}}" # set hostname
   [ -f "$CONF_DIR/$SERVICE_NAME.exec_cmd.sh" ] && . "$CONF_DIR/$SERVICE_NAME.exec_cmd.sh"
   if [ -z "$cmd" ]; then
-    __post_execute 2>"/dev/stderr" |& tee -a "$LOG_DIR/init.txt" &>/dev/null
+    __post_execute 2>"/dev/stderr" |& tee -p -a "$LOG_DIR/init.txt" &>/dev/null
+    retVal=$?
     echo "Initializing $SCRIPT_NAME has completed"
+    exit $retVal
   else
     # ensure the command exists
     if [ ! -x "$cmd" ]; then
@@ -440,72 +445,36 @@ __run_start_script() {
       echo "$name is already running" >&2
       exit 0
     else
+      # cd to dir
+      # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+      __cd "${workdir:-$home}"
       # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
       # show message if env exists
-      if [ -n "$cmd_exec" ]; then
-        [ -n "$SERVICE_USER" ] && echo "Setting up $cmd_exec to run as $SERVICE_USER" || SERVICE_USER="root"
+      if [ -n "$cmd" ]; then
+        [ -n "$SERVICE_USER" ] && echo "Setting up $cmd to run as $SERVICE_USER" || SERVICE_USER="root"
         [ -n "$SERVICE_PORT" ] && echo "$name will be running on $SERVICE_PORT" || SERVICE_PORT=""
       fi
       if [ -n "$pre" ] && [ -n "$(command -v "$pre" 2>/dev/null)" ]; then
         export cmd_exec="$pre $cmd $args"
-        message="Starting service: $name $args through $pre"
+        message="Starting service: $name $args through $pre $message"
       else
         export cmd_exec="$cmd $args"
-        message="Starting service: $name $args"
+        message="Starting service: $name $args $message"
       fi
-      __cd "${workdir:-$home}"
+      [ -f "$START_SCRIPT" ] || printf '#!/usr/bin/env sh\n# %s\n%s\n' "$message" "$cmd_exec" >"$START_SCRIPT"
+      [ -x "$START_SCRIPT" ] || chmod 755 -Rf "$START_SCRIPT"
+      [ -n "$su_exec" ] && echo "using $su_exec"
       echo "$message"
       su_cmd touch "$SERVICE_PID_FILE"
-      __post_execute |& tee -a "$LOG_DIR/init.txt" &>/dev/null &
+      __post_execute |& tee -p -a "$LOG_DIR/init.txt" &>/dev/null &
       if [ "$RESET_ENV" = "yes" ]; then
-        su_cmd env -i HOME="$home" LC_CTYPE="$lc_type" PATH="$path" HOSTNAME="$sysname" USER="${SERVICE_USER:-$RUNAS_USER}" $extra_env sh -c "$cmd_exec" ||
-          eval env -i HOME="$home" LC_CTYPE="$lc_type" PATH="$path" HOSTNAME="$sysname" USER="${SERVICE_USER:-$RUNAS_USER}" $extra_env sh -c "$cmd_exec" ||
+        su_cmd env -i HOME="$home" LC_CTYPE="$lc_type" PATH="$path" HOSTNAME="$sysname" USER="${SERVICE_USER:-$RUNAS_USER}" $extra_env sh -c "$START_SCRIPT" ||
+          eval env -i HOME="$home" LC_CTYPE="$lc_type" PATH="$path" HOSTNAME="$sysname" USER="${SERVICE_USER:-$RUNAS_USER}" $extra_env sh -c "$START_SCRIPT" ||
           return 10
       else
-        eval "$cmd_exec" || return 10
+        su_cmd "$START_SCRIPT" || eval "$START_SCRIPT" || return 10
       fi
     fi
-  fi
-}
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# username and password actions
-__run_secure_function() {
-  if [ -n "$user_name" ] || [ -n "$user_pass" ]; then
-    for filesperms in "${USER_FILE_PREFIX}"/*; do
-      if [ -e "$filesperms" ]; then
-        chmod -Rf 600 "$filesperms"
-        chown -Rf $SERVICE_USER:$SERVICE_USER "$filesperms"
-      fi
-    done |& tee -a "$LOG_DIR/init.txt" &>/dev/null
-  fi
-  if [ -n "$root_user_name" ] || [ -n "$root_user_pass" ]; then
-    for filesperms in "${ROOT_FILE_PREFIX}"/*; do
-      if [ -e "$filesperms" ]; then
-        chmod -Rf 600 "$filesperms"
-        chown -Rf $SERVICE_USER:$SERVICE_USER "$filesperms"
-      fi
-    done |& tee -a "$LOG_DIR/init.txt" &>/dev/null
-  fi
-}
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# simple cd function
-__cd() { mkdir -p "$1" && builtin cd "$1" || exit 1; }
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# process check functions
-__pcheck() { [ -n "$(type -P pgrep 2>/dev/null)" ] && pgrep -x "$1" &>/dev/null && return 0 || return 10; }
-__pgrep() { __pcheck "${1:-$EXEC_CMD_BIN}" || __ps aux 2>/dev/null | grep -Fw " ${1:-$EXEC_CMD_BIN}" | grep -qv ' grep' | grep '^' && return 0 || return 10; }
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# check if process is already running
-__proc_check() {
-  cmd_bin="$(type -P "${1:-$EXEC_CMD_BIN}")"
-  cmd_name="$(basename "${cmd_bin:-$EXEC_CMD_NAME}")"
-  if __pgrep "$cmd_bin" || __pgrep "$cmd_name"; then
-    SERVICE_IS_RUNNING="true"
-    touch "$SERVICE_PID_FILE"
-    echo "$cmd_name is already running"
-    return 0
-  else
-    return 1
   fi
 }
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
