@@ -137,7 +137,7 @@ IS_WEB_SERVER="no"
 IS_DATABASE_SERVICE="no"
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # Load variables from config
-[ -f "$CONF_DIR/env/aria2.sh" ] && . "$CONF_DIR/env/aria2.sh"
+[ -f "/config/env/aria2.sh" ] && . "/config/env/aria2.sh"
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # Additional predefined variables
 ARIA2C_RPC_SECRET="${ENV_RPC_SECRET:-${RPC_SECRET:-$ARIA2C_RPC_SECRET}}"
